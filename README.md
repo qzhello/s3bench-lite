@@ -84,6 +84,10 @@ WRITE_CONCURRENCY=64 OBJECT_SIZE=4MB TOTAL_SIZE=10GB ./s3bench -mode=write
 
 **JSON 结果**：设置 `RESULT_FILE=result.json` 后，会写入运行环境、配置、各阶段吞吐、分位延迟、错误分类等结构化结果，便于多轮对比。
 
+## AI 调用（Claude Code Skill）
+
+仓库自带 `.claude/skills/s3bench/SKILL.md`。用 Claude Code 打开本仓库时,AI 会自动识别该 skill,可直接让它"用 s3bench 压测某个 S3 网关 / 清理某批次",由 AI 设置环境变量并运行、解析 `RESULT_FILE` 结果。
+
 ## 实现要点
 
 - **AWS SDK v2 客户端**，使用成熟 S3 协议实现，支持自建 endpoint 和 path-style，减少自维护签名/编码细节。
