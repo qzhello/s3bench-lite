@@ -1,0 +1,19 @@
+# 编译产物（不应提交，体积大且平台相关）
+/s3bench
+/s3bench-linux-*
+/s3bench-darwin-*
+/s3bench-windows-*
+*.exe
+
+# 本地配置（含凭据，切勿提交）；保留 .env.example 作为模板
+.env
+
+# 压测结果
+result*.json
+
+# IDE
+.idea/
+.vscode/
+
+# 系统文件
+.DS_Store
