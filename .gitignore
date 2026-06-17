@@ -17,3 +17,6 @@ result*.json
 
 # 系统文件
 .DS_Store
+
+# Agent 工作脚手架（实现计划等过程产物）
+docs/superpowers/
