@@ -74,6 +74,7 @@ type Config struct {
 	ReadDuration    time.Duration // >0 时按时间持续压读（优先于 ReadCount）
 	ReadOps         []readOp
 	RangeSize       int64
+	ReadPattern     string // random | sequential：sequential 顺序遍历整批 key，保证全覆盖
 
 	ReportInterval time.Duration
 	HTTPTimeout    time.Duration
@@ -97,6 +98,11 @@ const (
 	opHEAD  readOp = "HEAD"
 	opRANGE readOp = "RANGE"
 	opLIST  readOp = "LIST"
+)
+
+const (
+	patternRandom     = "random"     // 随机有放回：贴近真实负载
+	patternSequential = "sequential" // 顺序遍历：保证整批 key 全覆盖、均匀
 )
 
 func loadConfig(envPath string) (*Config, error) {
@@ -153,6 +159,9 @@ func loadConfig(envPath string) (*Config, error) {
 	if c.RangeSize, err = parseSizeDef(get("RANGE_SIZE", "0"), 0); err != nil {
 		return nil, fmt.Errorf("RANGE_SIZE: %w", err)
 	}
+	if c.ReadPattern, err = parseReadPattern(get("READ_PATTERN", "random")); err != nil {
+		return nil, fmt.Errorf("READ_PATTERN: %w", err)
+	}
 	if c.ReadCount, err = atoi64Def(get("READ_COUNT", "0"), 0); err != nil {
 		return nil, fmt.Errorf("READ_COUNT: %w", err)
 	}
@@ -200,11 +209,11 @@ func (c *Config) summary() string {
 	return fmt.Sprintf(
 		"endpoint=%s bucket=%s region=%s pathStyle=%v\n"+
 			"mode=%s objectSize=%s totalSize=%s objectCount=%d\n"+
-			"runID=%s keyPrefix=%s readOps=%s rangeSize=%s warmup=%s cleanAfter=%v retry=%d\n"+
+			"runID=%s keyPrefix=%s readOps=%s readPattern=%s rangeSize=%s warmup=%s cleanAfter=%v retry=%d\n"+
 			"writeConc=%d readConc=%d readCount=%d readDuration=%s reportInterval=%s resultFile=%s",
 		c.Endpoint, c.Bucket, c.Region, c.PathStyle,
 		c.Mode, humanBytes(c.ObjectSize), humanBytes(c.TotalSize), c.ObjectCount,
-		c.RunID, c.KeyPrefix, formatReadOps(c.ReadOps), humanBytes(c.RangeSize), c.WarmupDuration, c.CleanAfter, c.Retry,
+		c.RunID, c.KeyPrefix, formatReadOps(c.ReadOps), c.ReadPattern, humanBytes(c.RangeSize), c.WarmupDuration, c.CleanAfter, c.Retry,
 		c.WriteConcurrency, c.ReadConcurrency, c.ReadCount, c.ReadDuration, c.ReportInterval, emptyDash(c.ResultFile),
 	)
 }
@@ -653,10 +662,10 @@ func runReadPhase(c *s3Client, cfg *Config, keys []objectRef, duration time.Dura
 	byTime := duration > 0
 	totalReq := readCount
 	if !byTime && totalReq <= 0 {
-		totalReq = int64(len(keys)) // 默认每个对象读一遍
+		totalReq = int64(len(keys)) // 默认读「对象数」次（sequential 时恰好每个对象一遍）
 	}
 
-	var nextReq int64 = -1
+	var seq int64 = -1 // 全局请求序号：sequential 模式据此顺序遍历 key
 	var progressTotal int64
 	if byTime {
 		progressTotal = 0 // 时长模式无固定总数
@@ -678,18 +687,23 @@ func runReadPhase(c *s3Client, cfg *Config, keys []objectRef, duration time.Dura
 			defer wg.Done()
 			rng := rand.New(rand.NewSource(int64(worker) + 100))
 			for {
+				i := atomic.AddInt64(&seq, 1)
 				if byTime {
 					if time.Now().After(deadline) {
 						return
 					}
-				} else {
-					i := atomic.AddInt64(&nextReq, 1)
-					if i >= totalReq {
-						return
-					}
+				} else if i >= totalReq {
+					return
 				}
-				obj := keys[rng.Intn(len(keys))]
-				op := cfg.ReadOps[rng.Intn(len(cfg.ReadOps))]
+				var obj objectRef
+				var op readOp
+				if cfg.ReadPattern == patternSequential {
+					obj = keys[i%int64(len(keys))]
+					op = cfg.ReadOps[i%int64(len(cfg.ReadOps))]
+				} else {
+					obj = keys[rng.Intn(len(keys))]
+					op = cfg.ReadOps[rng.Intn(len(cfg.ReadOps))]
+				}
 				t0 := time.Now()
 				n, err := runReadOp(c, cfg, obj, op)
 				if err != nil {
@@ -946,6 +960,7 @@ type resultConfig struct {
 	WriteConcurrency int                `json:"write_concurrency"`
 	ReadConcurrency  int                `json:"read_concurrency"`
 	ReadOps          string             `json:"read_ops"`
+	ReadPattern      string             `json:"read_pattern"`
 	ReadCount        int64              `json:"read_count"`
 	ReadDurationMs   int64              `json:"read_duration_ms"`
 	WarmupMs         int64              `json:"warmup_ms"`
@@ -1052,6 +1067,7 @@ func newBenchmarkResult(cfg *Config, start time.Time) benchmarkResult {
 			WriteConcurrency: cfg.WriteConcurrency,
 			ReadConcurrency:  cfg.ReadConcurrency,
 			ReadOps:          formatReadOps(cfg.ReadOps),
+			ReadPattern:      cfg.ReadPattern,
 			ReadCount:        cfg.ReadCount,
 			ReadDurationMs:   cfg.ReadDuration.Milliseconds(),
 			WarmupMs:         cfg.WarmupDuration.Milliseconds(),
@@ -1135,6 +1151,17 @@ func formatReadOps(ops []readOp) string {
 		names = append(names, string(op))
 	}
 	return strings.Join(names, ",")
+}
+
+func parseReadPattern(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "random", "rand":
+		return patternRandom, nil
+	case "sequential", "seq":
+		return patternSequential, nil
+	default:
+		return "", fmt.Errorf("未知读取模式 %q（支持 random|sequential）", s)
+	}
 }
 
 func parseObjectSizePattern(pattern string, defaultSize int64) ([]objectSizeWeight, error) {

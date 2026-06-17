@@ -57,6 +57,7 @@ WRITE_CONCURRENCY=64 OBJECT_SIZE=4MB TOTAL_SIZE=10GB ./s3bench -mode=write
 | `TOTAL_SIZE` | 总上传量；对象数按平均对象大小估算 | `1GB` |
 | `READ_CONCURRENCY` | 读并发 | `16` |
 | `READ_OPS` | 读负载类型：`get,head,range,list` 可混合 | `get` |
+| `READ_PATTERN` | `random`=随机有放回；`sequential`=顺序遍历整批 key，保证全覆盖且均匀 | `random` |
 | `RANGE_SIZE` | `range` 读取大小；`0` 表示读完整对象范围 | `0` |
 | `READ_COUNT` | 读请求总数；`0` = 读「对象数」次（对象**随机有放回**抽取，非逐个遍历） | `0` |
 | `READ_DURATION` | 按时长压读（如 `30s`），>0 时优先 | `0` |
@@ -94,7 +95,9 @@ WRITE_CONCURRENCY=64 OBJECT_SIZE=4MB TOTAL_SIZE=10GB ./s3bench -mode=write
 ## 注意
 
 - 延迟分位来自直方图桶，相对精度约 5%；`min`/`max` 为精确值。
-- **读取是随机有放回抽样**：每次请求从对象集合中随机挑一个 key（`keys[rand]`），而非逐个遍历。因此 `READ_COUNT=0`（默认读「对象数」次）时，约 63% 的对象会被覆盖，部分对象被读多次、部分一次没读到。若被测网关有缓存，命中率会偏高——做缓存敏感测试时请注意这一点，必要时调大 `READ_COUNT` 或用 `READ_DURATION` 按时长压测。
+- **读取模式由 `READ_PATTERN` 控制**：
+  - `random`（默认）：每次从对象集合随机挑一个 key（随机有放回）。`READ_COUNT=0`（默认读「对象数」次）时约 63% 对象被覆盖，部分对象读多次、部分漏读；贴近真实负载，但被测网关有缓存时热点会反复命中导致延迟偏低。
+  - `sequential`：按序号顺序遍历（`keys[i%N]`）。`READ_COUNT=0` 时恰好**每个对象读且仅读一遍**（100% 覆盖）；`READ_COUNT` 为对象数整数倍时每个对象被读相同次数（均匀）。想确保整批 key 都读到，用这个。
 - **`both` 模式只读取写入成功的对象**；而 `read` / `clean` 单独模式按写入算法（`KEY_PREFIX/RUN_ID/` + 12 位序号）重建**全部** `ObjectCount` 个 key，须保证使用相同的 `RUN_ID`、对象大小配置（含 `OBJECT_SIZE_PATTERN`）和 `TOTAL_SIZE`，否则 key 对不上。
 - `LIST` 操作只取首页（最多 1000 个 key），不翻页；用于测 LIST 延迟，返回计数封顶 1000。
 - `S3_SKIP_TLS_VERIFY` 默认 `true`（跳过证书校验），仅适合自建/内网集群。**生产或公网环境请设为 `false`**。
