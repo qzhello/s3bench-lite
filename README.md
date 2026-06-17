@@ -98,6 +98,8 @@ WRITE_CONCURRENCY=64 OBJECT_SIZE=4MB TOTAL_SIZE=10GB ./s3bench -mode=write
 - **读取模式由 `READ_PATTERN` 控制**：
   - `random`（默认）：每次从对象集合随机挑一个 key（随机有放回）。`READ_COUNT=0`（默认读「对象数」次）时约 63% 对象被覆盖，部分对象读多次、部分漏读；贴近真实负载，但被测网关有缓存时热点会反复命中导致延迟偏低。
   - `sequential`：按序号顺序遍历（`keys[i%N]`）。`READ_COUNT=0` 时恰好**每个对象读且仅读一遍**（100% 覆盖）；`READ_COUNT` 为对象数整数倍时每个对象被读相同次数（均匀）。想确保整批 key 都读到，用这个。
-- **`both` 模式只读取写入成功的对象**；而 `read` / `clean` 单独模式按写入算法（`KEY_PREFIX/RUN_ID/` + 12 位序号）重建**全部** `ObjectCount` 个 key，须保证使用相同的 `RUN_ID`、对象大小配置（含 `OBJECT_SIZE_PATTERN`）和 `TOTAL_SIZE`，否则 key 对不上。
+- **`both` 模式只读取写入成功的对象**。
+- **`read` 单独模式**按写入算法（`KEY_PREFIX/RUN_ID/` + 12 位序号）重建全部 `ObjectCount` 个 key，须保证 `RUN_ID`、对象大小配置（含 `OBJECT_SIZE_PATTERN`）、`TOTAL_SIZE` 与写入时一致，否则 key 对不上。
+- **`clean` 模式**按前缀 `KEY_PREFIX/RUN_ID/` **实际列举**对象后删除（翻页 LIST），因此删除一个批次**只需 `RUN_ID`（和 `KEY_PREFIX`）一致**即可删干净，不依赖对象大小/总量配置。
 - `LIST` 操作只取首页（最多 1000 个 key），不翻页；用于测 LIST 延迟，返回计数封顶 1000。
 - `S3_SKIP_TLS_VERIFY` 默认 `true`（跳过证书校验），仅适合自建/内网集群。**生产或公网环境请设为 `false`**。

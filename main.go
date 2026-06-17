@@ -510,6 +510,38 @@ func (c *s3Client) list(prefix string) (int64, error) {
 	return int64(len(resp.Contents)), nil
 }
 
+// listAll 翻页列举指定前缀下的全部对象，用于按批次（KEY_PREFIX/RUN_ID/）清理，
+// 只依赖前缀而非重建序号，因此删除时无需对齐对象大小/总量配置。
+func (c *s3Client) listAll(prefix string) ([]objectRef, error) {
+	var out []objectRef
+	var token *string
+	for {
+		resp, err := c.api.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
+			Bucket:            aws.String(c.cfg.Bucket),
+			Prefix:            aws.String(prefix),
+			ContinuationToken: token,
+		})
+		if err != nil {
+			return out, wrapS3Error("LIST", prefix, err)
+		}
+		for _, o := range resp.Contents {
+			ref := objectRef{}
+			if o.Key != nil {
+				ref.Key = *o.Key
+			}
+			if o.Size != nil {
+				ref.Size = *o.Size
+			}
+			out = append(out, ref)
+		}
+		if resp.IsTruncated == nil || !*resp.IsTruncated {
+			break
+		}
+		token = resp.NextContinuationToken
+	}
+	return out, nil
+}
+
 func (c *s3Client) delete(key string) error {
 	_, err := c.api.DeleteObject(context.Background(), &s3.DeleteObjectInput{
 		Bucket: aws.String(c.cfg.Bucket),
@@ -1446,7 +1478,13 @@ func main() {
 		readStats := runRead(client, cfg, keys)
 		result.Phases["read"] = summarizePhase(readStats, readStats.elapsed)
 	case "clean":
-		keys = expectedObjects(cfg)
+		listed, err := client.listAll(cfg.KeyPrefix)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "列举待清理对象失败: %v\n", err)
+			os.Exit(1)
+		}
+		keys = listed
+		fmt.Printf("[CLEAN] 前缀 %q 下列举到 %d 个对象\n", cfg.KeyPrefix, len(keys))
 		cleanStats := runClean(client, cfg, keys)
 		summary := summarizePhase(cleanStats, cleanStats.elapsed)
 		result.Phases["clean"] = summary
